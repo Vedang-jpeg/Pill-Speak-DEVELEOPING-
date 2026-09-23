@@ -166,6 +166,21 @@
       });
   })();
 
+  // Warm up the speech engine itself, separate from camera warmup above.
+  // On a cold page load, the first speechSynthesis.speak() call can have
+  // real startup latency (engine/voice list not ready yet) even though
+  // speak() returns instantly — causing the first utterance to visibly
+  // lag behind when the code thinks it started. Poking the engine early
+  // with an empty/near-silent utterance gives it time to spin up before
+  // the user's first real tap, so the real instruction plays without lag.
+  (function warmUpSpeechEngine() {
+    if (!window.speechSynthesis) return;
+    window.speechSynthesis.getVoices();
+    const warmup = new SpeechSynthesisUtterance(' ');
+    warmup.volume = 0; // inaudible
+    window.speechSynthesis.speak(warmup);
+  })();
+
   const resultDiv = document.getElementById('result');
   const statusDiv = document.getElementById('status');
   const speakAgainBtn = document.getElementById('speakAgainBtn');
@@ -184,37 +199,27 @@
   const startGate = document.getElementById('startGate');
 
   // The gate's whole job: capture the first tap (required by browsers
-  // before any audio can play), then speak the English instruction,
-  // then the Hindi instruction, one after another — only revealing the
-  // actual language zones once both have finished. If either utterance's
-  // onend never fires (inconsistent across browsers), a fallback timer
-  // moves things along anyway so the app can't get stuck on this screen.
+  // before any audio can play), then reveal the language zones
+  // IMMEDIATELY (not after the instructions finish speaking), so the
+  // English/Hindi audio narrates over zones that are already visible
+  // and tappable. This means a user can act on the English instruction
+  // as soon as they hear it, without waiting for the Hindi line too.
   let gateHandled = false;
   function handleGateTap() {
     if (gateHandled) return; // ignore repeat taps while instructions are playing
     gateHandled = true;
     startGate.removeEventListener('click', handleGateTap);
 
-    const revealZones = () => {
-      startGate.style.display = 'none';
-      langOverlay.style.display = 'flex';
-      langCaption.style.display = 'block';
-    };
+    startGate.style.display = 'none';
+    langOverlay.style.display = 'flex';
+    langCaption.style.display = 'block';
 
     const enUtterance = speak("Tap the left side for English.", "en");
     let movedOn = false;
     const proceedToHindi = () => {
       if (movedOn) return;
       movedOn = true;
-      const hiUtterance = speak("हिंदी के लिए दाईं तरफ टैप करें।", "hi");
-      let revealed = false;
-      const proceedToReveal = () => {
-        if (revealed) return;
-        revealed = true;
-        revealZones();
-      };
-      hiUtterance.onend = proceedToReveal;
-      setTimeout(proceedToReveal, 3000); // fallback if onend doesn't fire
+      speak("हिंदी के लिए दाईं तरफ टैप करें।", "hi");
     };
     enUtterance.onend = proceedToHindi;
     setTimeout(proceedToHindi, 3000); // fallback if onend doesn't fire
@@ -223,18 +228,24 @@
 
   // Best-effort ways to signal "there's a screen here, tap it" without
   // requiring the tap first:
-  //  1. Try to speak the instruction immediately. Many browsers block
-  //     audio until the user has interacted with the page at least once,
-  //     so this may simply produce no sound — that's expected, not a bug,
-  //     and is exactly why the tap-triggered version in handleGateTap
-  //     above still exists as the reliable path.
+  //  1. Try to speak the instruction immediately, in both English and
+  //     Hindi one after another. Many browsers block audio until the
+  //     user has interacted with the page at least once, so this may
+  //     simply produce no sound — that's expected, not a bug, and is
+  //     exactly why the tap-triggered version in handleGateTap above
+  //     still exists as the reliable path.
   //  2. A short vibration, which works with the screen off or silent and
   //     needs no prior interaction. Not supported on iOS Safari.
   //  3. Move focus onto the gate so that if a real screen reader
   //     (TalkBack / VoiceOver) is already switched on, the phone's own
   //     voice announces the gate's label independently of our TTS.
   window.addEventListener('load', () => {
-    try { speak("Tap anywhere to begin.", "en"); } catch (e) { /* ignore */ }
+    try {
+      speak("Tap anywhere to begin.", "en");
+      setTimeout(() => {
+        try { speak("शुरू करने के लिए कहीं भी टैप करें।", "hi"); } catch (e) { /* ignore */ }
+      }, 1800); // rough gap so the two lines don't overlap; not tied to onend since this runs before any user gesture may have unlocked audio
+    } catch (e) { /* ignore */ }
     if (navigator.vibrate) navigator.vibrate([200, 100, 200]);
     startGate.setAttribute('tabindex', '-1');
     startGate.focus();
